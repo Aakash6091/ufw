@@ -1,69 +1,127 @@
-#!/bin/bash
-# Fedora Lockdown Script Using UFW and RKHunter
-# This script configures and locks down Fedora 31 for Dovecot, Postfix, Roundcube, and SSH.
+#!/usr/bin/env python3
 
-# Ensure the UFW package is installed
-echo "Installing UFW if not already installed..."
-sudo dnf install -y ufw
+import sys
 
-# Enable UFW service
-echo "Enabling and starting UFW..."
-sudo systemctl enable ufw
-sudo systemctl start ufw
+# -------------------------------------------------
+# 1) Define your bracket data (2024 rates, etc.)
+#    You MUST fill in real bracket numbers.
+#    Below is just placeholder data!
+# -------------------------------------------------
 
-# Default deny all incoming traffic and allow outgoing traffic
-echo "Setting default UFW policies..."
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
+# Example Federal brackets for SINGLE filers (placeholder!)
+# Each tuple: (bracket_start, bracket_end, marginal_rate)
+federal_brackets_single = [
+    (0,       11000,   0.10),
+    (11000,   44725,   0.12),
+    (44725,   95375,   0.22),
+    (95375,   182100,  0.24),
+    (182100,  231250,  0.32),
+    (231250,  578125,  0.35),
+    (578125,  float('inf'), 0.37),
+]
 
-# Allow essential services for the webmail server
-echo "Allowing essential services..."
-sudo ufw allow ssh        # SSH for remote management
-sudo ufw allow 25         # SMTP for Postfix
-sudo ufw allow 143        # IMAP for Dovecot
-sudo ufw allow 587        # SMTP with STARTTLS for Postfix
-sudo ufw allow 993        # IMAP over SSL/TLS for Dovecot
-sudo ufw allow 443        # HTTPS for Roundcube webmail access
-sudo ufw allow 80         # HTTP for Roundcube webmail access
+# Example State brackets for SINGLE filers (placeholder: Wisconsin!)
+# Each tuple: (bracket_start, bracket_end, marginal_rate)
+wisconsin_brackets_single = [
+    (0,       12960,   0.0354),
+    (12960,   25920,   0.0465),
+    (25920,   280950,  0.0530),
+    (280950,  float('inf'), 0.0765),
+]
 
-# Enforce logging to monitor any unusual activity
-echo "Enabling logging..."
-sudo ufw logging on
+# FICA rate
+FICA_RATE = 0.0765  # 7.65%
 
-# Enable the firewall
-echo "Enabling UFW..."
-sudo ufw enable
+# -------------------------------------------------
+# 2) Function to compute "marginal bracket" taxes
+# -------------------------------------------------
+def compute_marginal_tax(income, brackets):
+    """
+    Given an income and a list of (start, end, rate),
+    return the total tax for that bracket structure.
+    """
+    tax = 0.0
+    remaining = income
+    for (low, high, rate) in brackets:
+        if remaining <= 0:
+            break
+        # Amount taxed at this bracket
+        span = high - low
+        taxable = min(remaining, span)
+        if taxable < 0:
+            taxable = 0
+        tax += taxable * rate
+        remaining -= taxable
+    return tax
 
-# Show final UFW status and rules
-echo "Firewall configuration completed. Current status:"
-sudo ufw status verbose
+# -------------------------------------------------
+# 3) Wrapper to compute total tax
+#    Federal + State + FICA
+# -------------------------------------------------
+def compute_total_tax(income, filing_status, state):
+    """
+    Returns total tax = Fed + State + FICA
+    for a given income, filing_status, and state.
+    """
+    # Choose federal bracket set
+    if filing_status.lower() == "single":
+        fed_tax = compute_marginal_tax(income, federal_brackets_single)
+    else:
+        # Extend to 'married_filing_jointly' etc. if needed
+        raise ValueError(f"Filing status '{filing_status}' not supported (placeholder).")
 
-# Install and Configure RKHunter
-echo "Installing RKHunter..."
-sudo dnf install -y rkhunter
+    # Choose state bracket set
+    if state.lower() == "wisconsin":
+        state_tax = compute_marginal_tax(income, wisconsin_brackets_single)
+    else:
+        # Add other states similarly
+        raise ValueError(f"State '{state}' not supported (placeholder).")
+    
+    fica_tax = income * FICA_RATE
+    total = fed_tax + state_tax + fica_tax
+    
+    # Round to 2 decimals; Python rounds .5 "up"
+    return round(total, 2)
 
-# Update RKHunter's database
-echo "Updating RKHunter database..."
-sudo rkhunter --update
+# -------------------------------------------------
+# 4) Main loop: read lines, parse, compute, output
+# -------------------------------------------------
+if __name__ == "__main__":
+    """
+    Example usage:
+      echo "1 Single Amy 153979 Wisconsin" | python3 tax_calc.py
 
-# Run RKHunter to check for rootkits
-echo "Running RKHunter scan..."
-sudo rkhunter --check --skip-keypress
-
-# Schedule Daily RKHunter Scans (optional)
-echo "Scheduling daily RKHunter scans..."
-echo "0 3 * * * root /usr/bin/rkhunter --check --quiet" | sudo tee -a /etc/crontab
-
-# Optional: Additional lockdown configurations (comment/uncomment as needed)
-# Disable root SSH login:
-# echo "Disabling root SSH login..."
-# sudo sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-# sudo systemctl restart sshd
-
-# Ensure SELinux is enforcing (Fedora default)
-echo "Ensuring SELinux is enforcing..."
-sudo setenforce 1
-sudo sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
-
-# Script complete
-echo "Lockdown complete! Fedora system secured with UFW and RKHunter configured for Dovecot, Postfix, Roundcube, and SSH."
+    or feed many lines for thousands of forms:
+      cat forms.txt | python3 tax_calc.py
+    """
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        # Expect input of the form: "Form# Status Name Income State"
+        parts = line.split()
+        if len(parts) < 5:
+            # Adjust if your data format differs
+            print("Invalid input line (need 5 fields). Skipping:", line)
+            continue
+        
+        form_number = parts[0]
+        filing_status = parts[1]   # e.g. "Single"
+        name = parts[2]           # e.g. "Amy"
+        income_str = parts[3]     # e.g. "153979"
+        state = parts[4]          # e.g. "Wisconsin"
+        
+        try:
+            income = float(income_str)
+        except ValueError:
+            print("Invalid income value:", income_str)
+            continue
+        
+        total_tax = compute_total_tax(income, filing_status, state)
+        
+        # Output the result
+        print(
+            f"Form#: {form_number}, Name: {name}, Income: {income}, "
+            f"Status: {filing_status}, State: {state}, "
+            f"Total Tax: {total_tax:.2f}"
+        )
